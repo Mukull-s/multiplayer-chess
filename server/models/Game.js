@@ -164,7 +164,6 @@ const gameSchema = new mongoose.Schema({
 });
 
 // Indexes for better query performance
-gameSchema.index({ gameId: 1 });
 gameSchema.index({ roomId: 1 });
 gameSchema.index({ status: 1 });
 gameSchema.index({ 'whitePlayer.userId': 1 });

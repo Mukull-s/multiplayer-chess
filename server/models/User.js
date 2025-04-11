@@ -163,8 +163,6 @@ const userSchema = new mongoose.Schema({
 });
 
 // Indexes for better query performance
-userSchema.index({ email: 1 });
-userSchema.index({ username: 1 });
 userSchema.index({ 'stats.rating': -1 });
 userSchema.index({ isOnline: 1 });
 userSchema.index({ lastSeen: -1 });
