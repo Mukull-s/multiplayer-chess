@@ -6,7 +6,7 @@ const { v4: uuidv4 } = require('uuid');
 // Create a new game
 const createGame = async (req, res) => {
     try {
-        const { userId, timeControl, opponentId } = req.body;
+        const { userId, timeControl } = req.body;
 
         // Validate time control
         const validTimeControls = {
@@ -19,46 +19,25 @@ const createGame = async (req, res) => {
             return res.status(400).json({ error: 'Invalid time control' });
         }
 
-        // Get user information
-        const user = await User.findById(userId);
-        if (!user) {
-            return res.status(404).json({ error: 'User not found' });
-        }
-
-        // Create new game
+        // Create new game without requiring a user
         const game = new Game({
             gameId: uuidv4(),
             roomId: uuidv4(),
             whitePlayer: {
-                userId: user._id,
-                username: user.username,
+                userId: userId || 'default-user',
+                username: 'Player 1',
                 color: 'white',
                 timeLeft: validTimeControls[timeControl].initialTime,
-                rating: user.stats.rating,
+                rating: 1200,
             },
             timeControl: {
                 type: timeControl,
                 initialTime: validTimeControls[timeControl].initialTime,
                 increment: validTimeControls[timeControl].increment,
             },
+            status: 'waiting',
+            fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
         });
-
-        // If opponent is specified, add them to the game
-        if (opponentId) {
-            const opponent = await User.findById(opponentId);
-            if (!opponent) {
-                return res.status(404).json({ error: 'Opponent not found' });
-            }
-
-            game.blackPlayer = {
-                userId: opponent._id,
-                username: opponent.username,
-                color: 'black',
-                timeLeft: validTimeControls[timeControl].initialTime,
-                rating: opponent.stats.rating,
-            };
-            game.status = 'in-progress';
-        }
 
         await game.save();
         res.status(201).json(game);
@@ -70,7 +49,8 @@ const createGame = async (req, res) => {
 // Join an existing game
 const joinGame = async (req, res) => {
     try {
-        const { gameId, userId } = req.body;
+        const { gameId } = req.params;
+        const { userId } = req.body;
 
         const game = await Game.findOne({ gameId });
         if (!game) {
@@ -86,19 +66,44 @@ const joinGame = async (req, res) => {
             return res.status(404).json({ error: 'User not found' });
         }
 
+        // Check if user is trying to join their own game
+        if (game.whitePlayer.userId.toString() === userId) {
+            return res.status(400).json({ error: 'Cannot join your own game' });
+        }
+
+        // Update game with black player
         game.blackPlayer = {
             userId: user._id,
             username: user.username,
             color: 'black',
-            timeLeft: game.timeControl.initialTime,
+            timeLeft: game.timeControl ? game.timeControl.initialTime : null,
             rating: user.stats.rating,
         };
         game.status = 'in-progress';
         game.startedAt = new Date();
 
         await game.save();
-        res.json(game);
+
+        // Notify both players through socket
+        const io = req.app.get('io');
+        io.to(game.roomId).emit('gameStarted', {
+            gameId: game.gameId,
+            whitePlayer: game.whitePlayer,
+            blackPlayer: game.blackPlayer,
+            timeControl: game.timeControl,
+            fen: game.fen
+        });
+
+        res.json({
+            gameId: game.gameId,
+            roomId: game.roomId,
+            playerColor: 'black',
+            fen: game.fen,
+            whitePlayer: game.whitePlayer,
+            blackPlayer: game.blackPlayer
+        });
     } catch (error) {
+        console.error('Error joining game:', error);
         res.status(500).json({ error: error.message });
     }
 };

@@ -63,15 +63,20 @@ const registerUser = async (req, res) => {
 const loginUser = async (req, res) => {
     try {
         const { email, password } = req.body;
+        console.log('Login attempt:', { email });
 
         // Find user
         const user = await User.findOne({ email });
+        console.log('User found:', user ? 'yes' : 'no');
+        
         if (!user) {
             return res.status(400).json({ error: 'Invalid credentials' });
         }
 
         // Check password
         const isMatch = await bcrypt.compare(password, user.password);
+        console.log('Password match:', isMatch);
+        
         if (!isMatch) {
             return res.status(400).json({ error: 'Invalid credentials' });
         }
@@ -94,6 +99,7 @@ const loginUser = async (req, res) => {
             },
         });
     } catch (error) {
+        console.error('Login error:', error);
         res.status(500).json({ error: error.message });
     }
 };

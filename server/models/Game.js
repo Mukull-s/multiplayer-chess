@@ -1,4 +1,6 @@
 const mongoose = require('mongoose');
+const { Chess } = require('chess.js');
+const { GameState, PlayerColor, GameResult, MoveType } = require('../../shared/types');
 
 const moveSchema = new mongoose.Schema({
     from: {
@@ -164,6 +166,247 @@ gameSchema.index({ 'whitePlayer.userId': 1 });
 gameSchema.index({ 'blackPlayer.userId': 1 });
 gameSchema.index({ startedAt: -1 });
 
-const Game = mongoose.model('Game', gameSchema);
+class Game {
+  constructor(id, timeControl = null) {
+    this.id = id;
+    this.chess = new Chess();
+    this.players = new Map();
+    this.spectators = new Set();
+    this.state = GameState.WAITING;
+    this.timeControl = timeControl;
+    this.timers = {
+      white: timeControl ? timeControl * 60 * 1000 : null, // Convert minutes to milliseconds
+      black: timeControl ? timeControl * 60 * 1000 : null
+    };
+    this.lastMoveTime = null;
+    this.drawOffer = null;
+    this.rematchOffer = null;
+    this.moveHistory = [];
+    this.chat = [];
+  }
 
-module.exports = Game; 
+  addPlayer(playerId, socketId) {
+    if (this.players.size >= 2) {
+      throw new Error('Game is full');
+    }
+
+    const color = this.players.size === 0 ? PlayerColor.WHITE : PlayerColor.BLACK;
+    this.players.set(playerId, {
+      id: playerId,
+      socketId,
+      color,
+      connected: true,
+      timeRemaining: this.timers[color]
+    });
+
+    if (this.players.size === 2) {
+      this.state = GameState.IN_PROGRESS;
+      this.lastMoveTime = Date.now();
+    }
+
+    return color;
+  }
+
+  removePlayer(playerId) {
+    const player = this.players.get(playerId);
+    if (player) {
+      this.players.delete(playerId);
+      if (this.state === GameState.IN_PROGRESS) {
+        this.state = GameState.ABANDONED;
+      }
+      return player;
+    }
+    return null;
+  }
+
+  addSpectator(socketId) {
+    this.spectators.add(socketId);
+  }
+
+  removeSpectator(socketId) {
+    this.spectators.delete(socketId);
+  }
+
+  makeMove(playerId, move) {
+    const player = this.players.get(playerId);
+    if (!player) {
+      throw new Error('Player not found');
+    }
+
+    if (this.state !== GameState.IN_PROGRESS) {
+      throw new Error('Game is not in progress');
+    }
+
+    const currentTurn = this.chess.turn() === 'w' ? PlayerColor.WHITE : PlayerColor.BLACK;
+    if (player.color !== currentTurn) {
+      throw new Error('Not your turn');
+    }
+
+    // Update timers before making the move
+    if (this.timeControl) {
+      this.updateTimers();
+    }
+
+    // Make the move
+    const result = this.chess.move(move);
+    if (!result) {
+      throw new Error('Invalid move');
+    }
+
+    // Record move in history
+    this.moveHistory.push({
+      ...result,
+      timestamp: Date.now(),
+      timeRemaining: player.timeRemaining
+    });
+
+    // Update last move time
+    this.lastMoveTime = Date.now();
+
+    // Determine move type
+    let moveType = MoveType.NORMAL;
+    if (result.captured) moveType = MoveType.CAPTURE;
+    if (result.flags.includes('k')) moveType = MoveType.CASTLE_KINGSIDE;
+    if (result.flags.includes('q')) moveType = MoveType.CASTLE_QUEENSIDE;
+    if (result.flags.includes('e')) moveType = MoveType.EN_PASSANT;
+    if (result.flags.includes('p')) moveType = MoveType.PROMOTION;
+
+    // Check game status
+    const gameStatus = {
+      isCheck: this.chess.isCheck(),
+      isCheckmate: this.chess.isCheckmate(),
+      isDraw: this.chess.isDraw(),
+      isGameOver: this.chess.isGameOver(),
+      moveType
+    };
+
+    if (gameStatus.isGameOver) {
+      this.state = GameState.COMPLETED;
+      if (gameStatus.isDraw) {
+        gameStatus.result = GameResult.DRAW;
+      } else {
+        gameStatus.result = this.chess.turn() === 'w' ? GameResult.BLACK_WIN : GameResult.WHITE_WIN;
+      }
+    }
+
+    return {
+      ...gameStatus,
+      move: result,
+      fen: this.chess.fen(),
+      pgn: this.chess.pgn()
+    };
+  }
+
+  updateTimers() {
+    if (!this.timeControl || !this.lastMoveTime) return;
+
+    const currentTime = Date.now();
+    const elapsedTime = currentTime - this.lastMoveTime;
+    const currentColor = this.chess.turn() === 'w' ? PlayerColor.WHITE : PlayerColor.BLACK;
+
+    for (const [playerId, player] of this.players) {
+      if (player.color === currentColor) {
+        player.timeRemaining = Math.max(0, player.timeRemaining - elapsedTime);
+        if (player.timeRemaining === 0) {
+          this.state = GameState.COMPLETED;
+          return {
+            result: player.color === PlayerColor.WHITE ? GameResult.BLACK_WIN : GameResult.WHITE_WIN,
+            reason: 'timeout'
+          };
+        }
+      }
+    }
+  }
+
+  offerDraw(playerId) {
+    if (!this.players.has(playerId)) {
+      throw new Error('Player not found');
+    }
+    this.drawOffer = playerId;
+  }
+
+  acceptDraw(playerId) {
+    if (this.drawOffer && this.drawOffer !== playerId) {
+      this.state = GameState.COMPLETED;
+      return true;
+    }
+    return false;
+  }
+
+  declineDraw(playerId) {
+    if (this.drawOffer && this.drawOffer !== playerId) {
+      this.drawOffer = null;
+      return true;
+    }
+    return false;
+  }
+
+  offerRematch(playerId) {
+    if (!this.players.has(playerId)) {
+      throw new Error('Player not found');
+    }
+    this.rematchOffer = playerId;
+  }
+
+  acceptRematch(playerId) {
+    if (this.rematchOffer && this.rematchOffer !== playerId) {
+      // Create new game with reversed colors
+      const newGame = new Game(this.id + '_rematch', this.timeControl);
+      for (const [pid, player] of this.players) {
+        const newColor = player.color === PlayerColor.WHITE ? PlayerColor.BLACK : PlayerColor.WHITE;
+        newGame.addPlayer(pid, player.socketId);
+      }
+      return newGame;
+    }
+    return null;
+  }
+
+  declineRematch(playerId) {
+    if (this.rematchOffer && this.rematchOffer !== playerId) {
+      this.rematchOffer = null;
+      return true;
+    }
+    return false;
+  }
+
+  addChatMessage(playerId, message) {
+    const player = this.players.get(playerId);
+    if (!player) {
+      throw new Error('Player not found');
+    }
+
+    const chatMessage = {
+      playerId,
+      playerColor: player.color,
+      message,
+      timestamp: Date.now()
+    };
+    this.chat.push(chatMessage);
+    return chatMessage;
+  }
+
+  getState() {
+    return {
+      id: this.id,
+      state: this.state,
+      fen: this.chess.fen(),
+      pgn: this.chess.pgn(),
+      players: Array.from(this.players.values()),
+      spectators: Array.from(this.spectators),
+      timeControl: this.timeControl,
+      timers: this.timers,
+      lastMoveTime: this.lastMoveTime,
+      drawOffer: this.drawOffer,
+      rematchOffer: this.rematchOffer,
+      moveHistory: this.moveHistory,
+      isCheck: this.chess.isCheck(),
+      isCheckmate: this.chess.isCheckmate(),
+      isDraw: this.chess.isDraw(),
+      isGameOver: this.chess.isGameOver()
+    };
+  }
+}
+
+const GameModel = mongoose.model('Game', gameSchema);
+
+module.exports = GameModel; 
