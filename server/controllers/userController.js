@@ -7,21 +7,19 @@ const config = require('../config/config');
 const registerUser = async (req, res) => {
     try {
         const { email, password, username } = req.body;
+        console.log('Registration attempt:', { email, username });
 
         // Check if user already exists
         const existingUser = await User.findOne({ $or: [{ email }, { username }] });
         if (existingUser) {
+            console.log('User already exists');
             return res.status(400).json({ error: 'User already exists' });
         }
 
-        // Hash password
-        const salt = await bcrypt.genSalt(10);
-        const hashedPassword = await bcrypt.hash(password, salt);
-
-        // Create new user
+        // Create new user with trimmed password
         const user = new User({
             email,
-            password: hashedPassword,
+            password: password.trim(), // Trim whitespace from password
             username,
             profile: {
                 avatar: 'default-avatar.png',
@@ -36,6 +34,7 @@ const registerUser = async (req, res) => {
         });
 
         await user.save();
+        console.log('User created successfully');
 
         // Generate JWT token
         const token = jwt.sign(
@@ -55,6 +54,7 @@ const registerUser = async (req, res) => {
             },
         });
     } catch (error) {
+        console.error('Registration error:', error);
         res.status(500).json({ error: error.message });
     }
 };
@@ -64,20 +64,26 @@ const loginUser = async (req, res) => {
     try {
         const { email, password } = req.body;
         console.log('Login attempt:', { email });
+        console.log('Password length:', password.length);
 
         // Find user
         const user = await User.findOne({ email });
         console.log('User found:', user ? 'yes' : 'no');
+        console.log('User details:', user ? { id: user._id, email: user.email } : null);
         
         if (!user) {
+            console.log('User not found in database');
             return res.status(400).json({ error: 'Invalid credentials' });
         }
 
         // Check password
+        console.log('Comparing passwords...');
+        console.log('Stored password hash length:', user.password.length);
         const isMatch = await bcrypt.compare(password, user.password);
         console.log('Password match:', isMatch);
         
         if (!isMatch) {
+            console.log('Password does not match');
             return res.status(400).json({ error: 'Invalid credentials' });
         }
 
@@ -88,6 +94,7 @@ const loginUser = async (req, res) => {
             { expiresIn: '24h' }
         );
 
+        console.log('Login successful, token generated');
         res.json({
             token,
             user: {

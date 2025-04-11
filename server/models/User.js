@@ -181,10 +181,18 @@ userSchema.pre('save', async function(next) {
     if (!this.isModified('password')) return next();
     
     try {
+        console.log('Hashing password for user:', this.email);
+        console.log('Original password length:', this.password.length);
+        
         const salt = await bcrypt.genSalt(10);
+        console.log('Generated salt:', salt);
+        
         this.password = await bcrypt.hash(this.password, salt);
+        console.log('Hashed password:', this.password);
+        
         next();
     } catch (error) {
+        console.error('Error hashing password:', error);
         next(error);
     }
 });

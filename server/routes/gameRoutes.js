@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const gameController = require('../controllers/gameController');
+const authMiddleware = require('../middlewares/authMiddleware');
 
 // Create a new game
 router.post('/', gameController.createGame);
@@ -12,7 +13,7 @@ router.post('/:gameId/join', gameController.joinGame);
 router.post('/:gameId/move', gameController.makeMove);
 
 // Get game state
-router.get('/:gameId', gameController.getGame);
+router.get('/:gameId', authMiddleware, gameController.getGame);
 
 // Resign from game
 router.post('/:gameId/resign', gameController.resignGame);
