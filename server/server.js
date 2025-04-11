@@ -2,10 +2,9 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const http = require('http');
-const socketIo = require('socket.io');
 const connectDB = require('./config/db');
 const routes = require('./routes');
-const { setupSocketHandlers } = require('./socket/socketHandlers');
+const { initializeSocket } = require('./socket');
 
 // Create Express app
 const app = express();
@@ -14,13 +13,7 @@ const server = http.createServer(app);
 // Connect to MongoDB
 connectDB().then(() => {
     // Initialize Socket.io after successful DB connection
-    const io = socketIo(server, {
-        cors: {
-            origin: process.env.CLIENT_URL || 'http://localhost:3000',
-            methods: ['GET', 'POST'],
-            credentials: true
-        }
-    });
+    const io = initializeSocket(server);
 
     // Middleware
     app.use(cors({
@@ -41,9 +34,6 @@ connectDB().then(() => {
             message: process.env.NODE_ENV === 'development' ? err.message : undefined
         });
     });
-
-    // Socket.io setup
-    setupSocketHandlers(io);
 
     // Start server
     const PORT = process.env.PORT || 5000;
