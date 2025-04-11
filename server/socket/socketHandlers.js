@@ -1,5 +1,6 @@
 const Game = require('../models/Game');
 const User = require('../models/User');
+const gameController = require('../controllers/gameController');
 
 const setupSocketHandlers = (io) => {
     io.on('connection', (socket) => {
@@ -44,7 +45,6 @@ const setupSocketHandlers = (io) => {
                 }
 
                 // Validate move and update game state
-                // This will be implemented in the game controller
                 const updatedGame = await gameController.makeMove({
                     gameId,
                     userId,
