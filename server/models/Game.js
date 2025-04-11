@@ -71,7 +71,7 @@ const gameSchema = new mongoose.Schema({
     // Game state
     status: {
         type: String,
-        enum: ['waiting', 'in-progress', 'draw', 'checkmate', 'resigned', 'timeout'],
+        enum: ['waiting', 'in_progress', 'completed'],
         default: 'waiting',
     },
     currentTurn: {
@@ -81,6 +81,7 @@ const gameSchema = new mongoose.Schema({
     },
     fen: {
         type: String,
+        required: true,
         default: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
     },
     pgn: {
@@ -128,16 +129,9 @@ const gameSchema = new mongoose.Schema({
 
     // Game result
     result: {
-        winner: {
-            type: String,
-            enum: ['white', 'black', 'draw'],
-            default: null,
-        },
-        reason: {
-            type: String,
-            enum: ['checkmate', 'resignation', 'timeout', 'draw', 'stalemate', 'insufficient-material', 'threefold-repetition', '50-move-rule'],
-            default: null,
-        },
+        type: String,
+        enum: ['white_wins', 'black_wins', 'draw', null],
+        default: null,
     },
 
     // Spectators

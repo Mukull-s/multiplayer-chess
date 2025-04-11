@@ -4,16 +4,38 @@ const cors = require('cors');
 const http = require('http');
 const connectDB = require('./config/db');
 const routes = require('./routes');
-const { initializeSocket } = require('./socket');
+const { Server } = require('socket.io');
+const gameRoutes = require('./routes/gameRoutes');
 
 // Create Express app
 const app = express();
 const server = http.createServer(app);
+const io = new Server(server, {
+    cors: {
+        origin: "http://localhost:3000",
+        methods: ["GET", "POST"]
+    }
+});
 
 // Connect to MongoDB
 connectDB().then(() => {
     // Initialize Socket.io after successful DB connection
-    const io = initializeSocket(server);
+    io.on('connection', (socket) => {
+        console.log('User connected:', socket.id);
+
+        socket.on('join_game', (gameId) => {
+            socket.join(gameId);
+            console.log(`User ${socket.id} joined game ${gameId}`);
+        });
+
+        socket.on('make_move', (data) => {
+            socket.to(data.gameId).emit('move_made', data.move);
+        });
+
+        socket.on('disconnect', () => {
+            console.log('User disconnected:', socket.id);
+        });
+    });
 
     // Middleware
     app.use(cors({
@@ -25,6 +47,7 @@ connectDB().then(() => {
 
     // Routes
     app.use('/api', routes);
+    app.use('/api/games', gameRoutes);
 
     // Error handling middleware
     app.use((err, req, res, next) => {
