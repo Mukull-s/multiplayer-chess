@@ -1,8 +1,19 @@
 require('dotenv').config();
 
-module.exports = {
-    port: process.env.PORT || 5000,
-    mongoUri: process.env.MONGO_URI,
+const config = {
+    mongoUri: process.env.MONGODB_URI,
     jwtSecret: process.env.JWT_SECRET,
-    nodeEnv: process.env.NODE_ENV || 'development',
-}; 
+    clientUrl: process.env.CLIENT_URL,
+    port: process.env.PORT || 5000,
+    nodeEnv: process.env.NODE_ENV || 'development'
+};
+
+// Validate required environment variables
+const requiredEnvVars = ['MONGODB_URI', 'JWT_SECRET'];
+for (const envVar of requiredEnvVars) {
+    if (!process.env[envVar]) {
+        throw new Error(`Environment variable ${envVar} is required`);
+    }
+}
+
+module.exports = config; 
