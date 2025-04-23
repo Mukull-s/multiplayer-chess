@@ -12,7 +12,10 @@ const app = express();
 const server = http.createServer(app);
 
 // Middleware
-app.use(cors());
+app.use(cors({
+    origin: process.env.CLIENT_URL || "http://localhost:3000",
+    credentials: true
+}));
 app.use(express.json());
 
 // Mount routes
@@ -29,8 +32,12 @@ const io = new Server(server, {
     transports: ['websocket', 'polling'],
     pingTimeout: 60000,
     pingInterval: 25000,
-    connectTimeout: 45000
+    connectTimeout: 45000,
+    path: '/socket.io'
 });
+
+// Make io accessible to routes
+app.set('io', io);
 
 // Store active games
 const games = new Map();
@@ -45,100 +52,34 @@ connectDB().then(() => {
     io.on('connection', (socket) => {
         console.log('New connection:', socket.id);
         
-        // Handle socket events here
-        socket.on('createGame', (data) => {
-            const gameId = Math.random().toString(36).substring(2, 8);
-            const game = new Chess();
-            
-            games.set(gameId, {
-                game,
-                players: new Set([socket.id]),
-                status: 'waiting',
-                createdAt: Date.now()
-            });
-            
-            socket.join(gameId);
-            socket.emit('gameCreated', { gameId });
+        // Handle authentication
+        socket.on('authenticate', (token) => {
+            // Verify token and set user data
+            // This is a placeholder - implement proper token verification
+            console.log('Client authenticated:', socket.id);
         });
-        
-        socket.on('joinGame', (data) => {
-            const { gameId } = data;
-            const game = games.get(gameId);
-            
-            if (!game) {
-                socket.emit('error', { message: 'Game not found' });
-                return;
-            }
-            
-            if (game.players.size >= 2) {
-                socket.emit('error', { message: 'Game is full' });
-                return;
-            }
-            
-            game.players.add(socket.id);
-            socket.join(gameId);
-            socket.emit('gameJoined', { gameId });
-            
-            // Notify all players in the room
-            io.to(gameId).emit('playerJoined', {
-                players: Array.from(game.players)
-            });
+
+        // Handle room joining
+        socket.on('joinRoom', ({ roomId }) => {
+            console.log('Client joining room:', roomId);
+            socket.join(roomId);
+            io.to(roomId).emit('roomJoined', { roomId, playerId: socket.id });
         });
-        
-        socket.on('makeMove', (data) => {
-            const { gameId, move } = data;
-            const game = games.get(gameId);
-            
-            if (!game) {
-                socket.emit('error', { message: 'Game not found' });
-                return;
-            }
-            
-            if (!game.players.has(socket.id)) {
-                socket.emit('error', { message: 'You are not a player in this game' });
-                return;
-            }
-            
-            try {
-                const result = game.game.move(move);
-                if (result) {
-                    // Broadcast the move to all players in the room
-                    io.to(gameId).emit('moveMade', {
-                        move: result,
-                        fen: game.game.fen(),
-                        turn: game.game.turn(),
-                        isGameOver: game.game.isGameOver()
-                    });
-                } else {
-                    socket.emit('error', { message: 'Invalid move' });
-                }
-            } catch (error) {
-                console.error('Error making move:', error);
-                socket.emit('error', { message: 'Failed to make move' });
-            }
-        });
-        
+
+        // Handle disconnection
         socket.on('disconnect', () => {
             console.log('Client disconnected:', socket.id);
-            // Clean up player from all games
-            for (const [gameId, gameData] of games.entries()) {
-                if (gameData.players.has(socket.id)) {
-                    gameData.players.delete(socket.id);
-                    io.to(gameId).emit('playerLeft', {
-                        playerId: socket.id,
-                        players: Array.from(gameData.players)
-                    });
-                }
-            }
+            // Clean up game state if needed
         });
     });
-    
+
     // Start server
     const PORT = process.env.PORT || 5000;
     server.listen(PORT, () => {
         console.log(`Server running on port ${PORT}`);
+        console.log(`Socket.IO server running on port ${PORT}`);
     });
-}).catch(error => {
+}).catch((error) => {
     console.error('Failed to connect to MongoDB:', error);
     process.exit(1);
 });

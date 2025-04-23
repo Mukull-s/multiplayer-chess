@@ -2,16 +2,25 @@ const Game = require('../models/Game');
 const User = require('../models/User');
 const { Chess } = require('chess.js');
 const { v4: uuidv4 } = require('uuid');
+const mongoose = require('mongoose');
 
 // Create a new game
 const createGame = async (req, res) => {
     try {
-        const { userId, timeControl } = req.body;
+        const { timeControl } = req.body;
+        const userId = req.user._id;
+        const username = req.user.username;
+
+        console.log('Creating game with:', { 
+            userId: userId.toString(), 
+            username, 
+            timeControl 
+        });
 
         // Validate time control
         const validTimeControls = {
-            blitz: { initialTime: 300000, increment: 0 }, // 5 minutes
-            rapid: { initialTime: 600000, increment: 0 }, // 10 minutes
+            blitz: { initialTime: 300000, increment: 3000 }, // 5 minutes + 3 seconds increment
+            rapid: { initialTime: 900000, increment: 10000 }, // 15 minutes + 10 seconds increment
             classical: { initialTime: 1800000, increment: 0 }, // 30 minutes
         };
 
@@ -19,13 +28,21 @@ const createGame = async (req, res) => {
             return res.status(400).json({ error: 'Invalid time control' });
         }
 
-        // Create new game without requiring a user
+        // Generate unique game ID
+        const gameId = uuidv4();
+        const roomId = `game_${gameId}`;
+
+        // Initialize chess game
+        const chess = new Chess();
+        const initialFen = chess.fen();
+
+        // Create new game
         const game = new Game({
-            gameId: uuidv4(),
-            roomId: uuidv4(),
+            gameId,
+            roomId,
             whitePlayer: {
-                userId: userId || 'default-user',
-                username: 'Player 1',
+                userId: userId,
+                username: username,
                 color: 'white',
                 timeLeft: validTimeControls[timeControl].initialTime,
                 rating: 1200,
@@ -36,13 +53,59 @@ const createGame = async (req, res) => {
                 increment: validTimeControls[timeControl].increment,
             },
             status: 'waiting',
-            fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+            fen: initialFen,
+            moves: [],
+            currentTurn: 'white',
+            createdAt: new Date(),
+            updatedAt: new Date()
+        });
+
+        console.log('Saving game to database:', {
+            gameId,
+            roomId,
+            whitePlayer: {
+                userId: game.whitePlayer.userId.toString(),
+                username: game.whitePlayer.username
+            },
+            timeControl: game.timeControl
         });
 
         await game.save();
-        res.status(201).json(game);
+        console.log('Game saved successfully');
+
+        // Notify through socket if available
+        try {
+            const io = req.app.get('io');
+            if (io) {
+                io.emit('gameCreated', {
+                    gameId,
+                    roomId,
+                    status: game.status,
+                    whitePlayer: game.whitePlayer,
+                    timeControl: game.timeControl
+                });
+            }
+        } catch (socketError) {
+            console.error('Error sending socket notification:', socketError);
+        }
+
+        res.status(201).json({
+            gameId,
+            roomId,
+            status: game.status,
+            whitePlayer: {
+                userId: game.whitePlayer.userId.toString(),
+                username: game.whitePlayer.username
+            },
+            timeControl: game.timeControl,
+            fen: game.fen
+        });
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        console.error('Error creating game:', error);
+        res.status(500).json({ 
+            error: 'Failed to create game',
+            details: error.message 
+        });
     }
 };
 
@@ -50,7 +113,7 @@ const createGame = async (req, res) => {
 const joinGame = async (req, res) => {
     try {
         const { gameId } = req.params;
-        const { userId } = req.body;
+        const userId = req.userId;
 
         console.log('Attempting to join game:', gameId);
         console.log('User ID:', userId);
@@ -86,28 +149,39 @@ const joinGame = async (req, res) => {
             timeLeft: game.timeControl ? game.timeControl.initialTime : null,
             rating: user.stats.rating,
         };
-        game.status = 'in-progress';
+        game.status = 'in_progress';
         game.startedAt = new Date();
 
         await game.save();
 
-        // Notify both players through socket
-        const io = req.app.get('io');
-        io.to(game.roomId).emit('gameStarted', {
-            gameId: game.gameId,
-            whitePlayer: game.whitePlayer,
-            blackPlayer: game.blackPlayer,
-            timeControl: game.timeControl,
-            fen: game.fen
-        });
+        // Notify both players through socket if available
+        try {
+            const io = req.app.get('io');
+            if (io && game.roomId) {
+                // Notify all players in the room
+                io.to(game.roomId).emit('gameStarted', {
+                    gameId: game.gameId,
+                    whitePlayer: game.whitePlayer,
+                    blackPlayer: game.blackPlayer,
+                    timeControl: game.timeControl,
+                    fen: game.fen
+                });
+            }
+        } catch (socketError) {
+            console.error('Error sending socket notification:', socketError);
+            // Continue with the response even if socket notification fails
+        }
 
         res.json({
             gameId: game.gameId,
             roomId: game.roomId,
             playerColor: 'black',
             fen: game.fen,
+            status: game.status,
+            currentTurn: game.currentTurn,
             whitePlayer: game.whitePlayer,
-            blackPlayer: game.blackPlayer
+            blackPlayer: game.blackPlayer,
+            timeControl: game.timeControl
         });
     } catch (error) {
         console.error('Error joining game:', error);
@@ -119,7 +193,7 @@ const joinGame = async (req, res) => {
 const getGame = async (req, res) => {
     try {
         const { gameId } = req.params;
-        const userId = req.user._id; // Get user ID from authenticated request
+        const userId = req.userId; // Get user ID from authenticated request
 
         console.log('Attempting to get game:', gameId);
         console.log('Requested by user:', userId);
@@ -131,11 +205,12 @@ const getGame = async (req, res) => {
             return res.status(404).json({ error: 'Game not found' });
         }
 
-        // Check if user is part of the game
+        // Check if user is part of the game or if game is waiting for players
         const isWhitePlayer = game.whitePlayer && game.whitePlayer.userId.toString() === userId;
         const isBlackPlayer = game.blackPlayer && game.blackPlayer.userId.toString() === userId;
+        const isWaitingForPlayers = game.status === 'waiting';
 
-        if (!isWhitePlayer && !isBlackPlayer) {
+        if (!isWhitePlayer && !isBlackPlayer && !isWaitingForPlayers) {
             console.log('User not authorized to view this game');
             return res.status(403).json({ error: 'Not authorized to view this game' });
         }

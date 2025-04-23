@@ -23,12 +23,18 @@ const Login = () => {
 
     try {
       const result = await login(email, password);
+      console.log('Login result:', result);
+      
       if (result.success) {
-        navigate('/');
+        // Add a small delay to ensure state updates are processed
+        setTimeout(() => {
+          navigate('/');
+        }, 100);
       } else {
         setError(result.error || 'Invalid credentials');
       }
     } catch (error) {
+      console.error('Login error:', error);
       setError('An error occurred during login');
     } finally {
       setIsLoading(false);

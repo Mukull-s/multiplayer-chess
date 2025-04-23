@@ -34,6 +34,7 @@ const playerSchema = new mongoose.Schema({
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User',
         required: true,
+        transform: (v) => v.toString(), // Convert ObjectId to string when toJSON is called
     },
     username: {
         type: String,
@@ -64,16 +65,23 @@ const gameSchema = new mongoose.Schema({
     roomId: {
         type: String,
         required: true,
+        unique: true,
     },
 
     // Players
-    whitePlayer: playerSchema,
-    blackPlayer: playerSchema,
+    whitePlayer: {
+        type: playerSchema,
+        required: true,
+    },
+    blackPlayer: {
+        type: playerSchema,
+        default: null,
+    },
 
     // Game state
     status: {
         type: String,
-        enum: ['waiting', 'in_progress', 'completed'],
+        enum: ['waiting', 'in-progress', 'completed'],
         default: 'waiting',
     },
     currentTurn: {
@@ -109,7 +117,10 @@ const gameSchema = new mongoose.Schema({
     },
 
     // Game history
-    moves: [moveSchema],
+    moves: {
+        type: [moveSchema],
+        default: [],
+    },
     capturedPieces: {
         white: [String],
         black: [String],
@@ -155,6 +166,15 @@ const gameSchema = new mongoose.Schema({
             default: Date.now,
         },
     }],
+
+    createdAt: {
+        type: Date,
+        default: Date.now,
+    },
+    updatedAt: {
+        type: Date,
+        default: Date.now,
+    },
 }, {
     timestamps: true,
 });
@@ -165,6 +185,16 @@ gameSchema.index({ status: 1 });
 gameSchema.index({ 'whitePlayer.userId': 1 });
 gameSchema.index({ 'blackPlayer.userId': 1 });
 gameSchema.index({ startedAt: -1 });
+
+// Add toJSON transform to convert ObjectIds to strings
+gameSchema.set('toJSON', {
+    transform: (doc, ret) => {
+        ret.id = ret._id.toString();
+        delete ret._id;
+        delete ret.__v;
+        return ret;
+    }
+});
 
 class Game {
   constructor(id, timeControl = null) {

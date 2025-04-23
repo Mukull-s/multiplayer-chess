@@ -1,5 +1,6 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
-import { socketService } from '../services/socketService';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import socketService from '../services/socketService';
+import { login as apiLogin, register as apiRegister, getProfile } from '../services/api';
 
 const AuthContext = createContext();
 
@@ -7,97 +8,116 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(localStorage.getItem('token'));
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
 
-  useEffect(() => {
-    // Check if user is already logged in
-    if (token) {
-      fetchUserProfile();
-    } else {
+  const fetchUserProfile = useCallback(async (authToken) => {
+    if (!authToken) {
+      console.log('No auth token available for profile fetch');
       setLoading(false);
+      return;
     }
-  }, [token]);
 
-  const fetchUserProfile = async () => {
     try {
-      const response = await fetch('http://localhost:5000/api/users/profile', {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setUser(data);
+      console.log('Fetching user profile with token:', authToken.substring(0, 10) + '...');
+      const response = await getProfile();
+      console.log('Profile response:', response);
+      
+      if (response.data) {
+        setUser(response.data);
         // Set token for socket service
-        socketService.setToken(token);
+        if (socketService) {
+          socketService.setToken(authToken);
+        }
       } else {
-        // Token is invalid or expired
+        console.error('No data in profile response:', response);
         logout();
       }
     } catch (error) {
       console.error('Error fetching user profile:', error);
-      logout();
+      if (error.response?.status === 401) {
+        console.log('Token expired or invalid, logging out');
+        logout();
+      } else {
+        console.error('Profile fetch error details:', {
+          status: error.response?.status,
+          data: error.response?.data,
+          message: error.message
+        });
+      }
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    // Check if user is already logged in
+    if (token) {
+      fetchUserProfile(token);
+    } else {
+      setLoading(false);
+    }
+  }, [token, fetchUserProfile]);
 
   const login = async (email, password) => {
     try {
       console.log('Attempting login with:', { email });
-      const response = await fetch('http://localhost:5000/api/users/login', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ email, password }),
-      });
-
-      console.log('Login response status:', response.status);
-      const data = await response.json();
-      console.log('Login response data:', data);
+      const response = await apiLogin({ email, password });
+      console.log('Login response:', response);
       
-      if (response.ok) {
-        localStorage.setItem('token', data.token);
-        setToken(data.token);
-        setUser(data.user);
-        // Set token for socket service
-        socketService.setToken(data.token);
-        return { success: true };
+      if (response.data) {
+        const { token, user } = response.data;
+        
+        if (token && user) {
+          localStorage.setItem('token', token);
+          setToken(token);
+          setUser(user);
+          // Set token for socket service
+          if (socketService) {
+            socketService.setToken(token);
+          }
+          return { success: true };
+        } else {
+          console.error('Missing token or user in response:', response.data);
+          return { success: false, error: 'Invalid server response format' };
+        }
       } else {
-        return { success: false, error: data.error };
+        console.error('No data in response:', response);
+        return { success: false, error: 'Invalid server response' };
       }
     } catch (error) {
       console.error('Login error:', error);
-      return { success: false, error: 'An error occurred during login' };
+      const errorMessage = error.response?.data?.error || error.message || 'An error occurred during login';
+      return { success: false, error: errorMessage };
     }
   };
 
   const register = async (email, password, username) => {
     try {
-      const response = await fetch('http://localhost:5000/api/users/register', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ email, password, username }),
-      });
-
-      const data = await response.json();
+      const response = await apiRegister({ email, password, username });
       
-      if (response.ok) {
-        localStorage.setItem('token', data.token);
-        setToken(data.token);
-        setUser(data.user);
-        // Set token for socket service
-        socketService.setToken(data.token);
-        return { success: true };
+      if (response.data) {
+        const { token, user } = response.data;
+        
+        if (token && user) {
+          localStorage.setItem('token', token);
+          setToken(token);
+          setUser(user);
+          // Set token for socket service
+          if (socketService) {
+            socketService.setToken(token);
+          }
+          return { success: true };
+        } else {
+          console.error('Missing token or user in response:', response.data);
+          return { success: false, error: 'Invalid server response format' };
+        }
       } else {
-        return { success: false, error: data.error };
+        console.error('No data in response:', response);
+        return { success: false, error: 'Invalid server response' };
       }
     } catch (error) {
       console.error('Registration error:', error);
-      return { success: false, error: 'An error occurred during registration' };
+      const errorMessage = error.response?.data?.error || error.message || 'An error occurred during registration';
+      return { success: false, error: errorMessage };
     }
   };
 
@@ -105,25 +125,22 @@ export const AuthProvider = ({ children }) => {
     localStorage.removeItem('token');
     setToken(null);
     setUser(null);
-    socketService.setToken(null);
+    if (socketService) {
+      socketService.setToken(null);
+    }
   };
 
-  return (
-    <AuthContext.Provider
-      value={{
-        user,
-        token,
-        loading,
-        error,
-        login,
-        register,
-        logout,
-        isAuthenticated: !!user
-      }}
-    >
-      {children}
-    </AuthContext.Provider>
-  );
+  const value = {
+    user,
+    token,
+    loading,
+    login,
+    register,
+    logout,
+    isAuthenticated: !!user
+  };
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };
 
 export const useAuth = () => {

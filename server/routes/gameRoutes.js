@@ -4,24 +4,24 @@ const gameController = require('../controllers/gameController');
 const authMiddleware = require('../middlewares/authMiddleware');
 
 // Create a new game
-router.post('/', gameController.createGame);
+router.post('/', authMiddleware, gameController.createGame);
 
 // Join a game
-router.post('/:gameId/join', gameController.joinGame);
+router.post('/:gameId/join', authMiddleware, gameController.joinGame);
 
 // Make a move
-router.post('/:gameId/move', gameController.makeMove);
+router.post('/:gameId/move', authMiddleware, gameController.makeMove);
 
 // Get game state
 router.get('/:gameId', authMiddleware, gameController.getGame);
 
 // Resign from game
-router.post('/:gameId/resign', gameController.resignGame);
+router.post('/:gameId/resign', authMiddleware, gameController.resignGame);
 
 // Get active games
-router.get('/user/:userId/active', gameController.getActiveGames);
+router.get('/user/:userId/active', authMiddleware, gameController.getActiveGames);
 
 // Get game history
-router.get('/user/:userId/history', gameController.getGameHistory);
+router.get('/user/:userId/history', authMiddleware, gameController.getGameHistory);
 
 module.exports = router; 

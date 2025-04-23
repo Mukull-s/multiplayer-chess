@@ -1,274 +1,178 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { Chess } from 'chess.js';
-import { socketService } from '../services/socketService';
+import socketService from '../services/socketService';
 import { useAuth } from './AuthContext';
+import { createGame as apiCreateGame } from '../services/api';
 
 const GameContext = createContext();
 
 export const GameProvider = ({ children }) => {
-  const [game, setGame] = useState(new Chess());
+  const [game, setGame] = useState(null);
   const [gameId, setGameId] = useState(null);
+  const [gameStatus, setGameStatus] = useState(null);
   const [playerColor, setPlayerColor] = useState(null);
-  const [opponentConnected, setOpponentConnected] = useState(false);
-  const [gameStatus, setGameStatus] = useState('waiting');
-  const [error, setError] = useState(null);
-  const [opponentName, setOpponentName] = useState(null);
   const [isMyTurn, setIsMyTurn] = useState(false);
-  
-  // Safely get auth context
-  let user = null;
-  try {
-    const auth = useAuth();
-    user = auth?.user;
-  } catch (error) {
-    console.warn('Auth context not available:', error);
-  }
+  const [error, setError] = useState(null);
+  const [opponentConnected, setOpponentConnected] = useState(false);
+  const { user } = useAuth();
+
+  // Initialize socket connection when user is authenticated
+  useEffect(() => {
+    if (user?.token) {
+      socketService.setToken(user.token);
+      socketService.connect().catch(error => {
+        console.error('Failed to connect to socket server:', error);
+      });
+    }
+  }, [user]);
 
   const handlePlayerJoined = useCallback(({ players, playerColor: assignedColor }) => {
+    console.log('Player joined:', { players, assignedColor });
     setOpponentConnected(true);
-    setGameStatus('in-progress');
+    setGameStatus('in_progress');
     setPlayerColor(assignedColor);
     setIsMyTurn(assignedColor === 'white');
   }, []);
 
   const handleGameStarted = useCallback(({ players, fen, turn }) => {
-    const newGame = new Chess(fen);
-    setGame(newGame);
-    setGameStatus('in-progress');
-    setIsMyTurn(turn === (playerColor === 'white' ? 'w' : 'b'));
+    console.log('Game started:', { players, fen, turn });
+    try {
+      const newGame = new Chess(fen);
+      setGame(newGame);
+      setGameStatus('in_progress');
+      setIsMyTurn(turn === (playerColor === 'white' ? 'w' : 'b'));
+    } catch (error) {
+      console.error('Error initializing game:', error);
+      setError('Failed to initialize game state');
+    }
   }, [playerColor]);
 
   const handleMoveMade = useCallback(({ move, fen, turn, isGameOver, inCheck, isCheckmate }) => {
-    setGame(currentGame => {
-      try {
-        const gameCopy = new Chess(fen);
-        return gameCopy;
-      } catch (error) {
-        console.error('Error applying move:', error);
-        return currentGame;
-      }
-    });
+    console.log('Move made:', { move, fen, turn, isGameOver, inCheck, isCheckmate });
+    try {
+      const gameCopy = new Chess(fen);
+      setGame(gameCopy);
+      setIsMyTurn(turn === (playerColor === 'white' ? 'w' : 'b'));
 
-    setIsMyTurn(turn === (playerColor === 'white' ? 'w' : 'b'));
-
-    if (isGameOver) {
-      setGameStatus('completed');
-      if (isCheckmate) {
-        setError(`Game Over - ${inCheck ? 'Checkmate!' : 'Draw!'}`);
+      if (isGameOver) {
+        setGameStatus('completed');
+        setError(`Game Over - ${isCheckmate ? 'Checkmate!' : 'Draw!'}`);
       }
+    } catch (error) {
+      console.error('Error applying move:', error);
+      setError('Failed to apply move');
     }
   }, [playerColor]);
 
   const handlePlayerLeft = useCallback(({ playerId }) => {
+    console.log('Player left:', playerId);
     setOpponentConnected(false);
     setGameStatus('waiting');
     setError('Opponent disconnected');
   }, []);
 
   const handleError = useCallback(({ message }) => {
+    console.error('Game error:', message);
     setError(message);
   }, []);
 
-  useEffect(() => {
-    let isSubscribed = true;
+  const handleGameOver = useCallback(({ result, winner }) => {
+    console.log('Game over:', { result, winner });
+    setGameStatus('completed');
+    setError(`Game Over - ${result === 'checkmate' ? 'Checkmate!' : 'Draw!'}`);
+  }, []);
 
-    const setupGame = async () => {
+  const setupGame = async (timeControl) => {
+    try {
+      console.log('Setting up game with time control:', timeControl);
+      if (!user) {
+        throw new Error('User not authenticated');
+      }
+
+      // Validate time control
+      const validTimeControls = {
+        'rapid': { initialTime: 900000, increment: 10000 }, // 15 minutes + 10 seconds
+        'blitz': { initialTime: 300000, increment: 3000 },  // 5 minutes + 3 seconds
+        'classical': { initialTime: 1800000, increment: 0 } // 30 minutes
+      };
+
+      if (!validTimeControls[timeControl]) {
+        throw new Error('Invalid time control selected');
+      }
+
+      const response = await apiCreateGame(timeControl);
+      console.log('Game creation response:', response);
+
+      if (!response.gameId) {
+        throw new Error('No game ID received from server');
+      }
+
+      const { gameId, roomId } = response;
+      console.log('Game created successfully:', { gameId, roomId });
+
+      // Set game state
+      setGameId(gameId);
+      setGameStatus('waiting');
+      setPlayerColor('white');
+      setOpponentConnected(false);
+      setIsMyTurn(true);
+
+      // Connect to socket server and join room
       try {
         await socketService.connect();
+        socketService.joinGame(roomId);
 
-        if (!isSubscribed) return;
-
+        // Set up socket event listeners
         socketService.on('playerJoined', handlePlayerJoined);
         socketService.on('gameStarted', handleGameStarted);
         socketService.on('moveMade', handleMoveMade);
-        socketService.on('playerLeft', handlePlayerLeft);
+        socketService.on('gameOver', handleGameOver);
         socketService.on('error', handleError);
-
-      } catch (error) {
-        console.error('Failed to setup game:', error);
-        if (isSubscribed) {
-          setError('Failed to connect to game server');
-        }
+      } catch (socketError) {
+        console.error('Socket connection error:', socketError);
+        setError('Failed to connect to game server');
       }
-    };
 
-    setupGame();
+      return gameId;
+    } catch (error) {
+      console.error('Error setting up game:', error);
+      setError(error.message || 'Failed to set up game');
+      throw error;
+    }
+  };
 
+  // Cleanup socket listeners and connection
+  useEffect(() => {
     return () => {
-      isSubscribed = false;
       try {
-        socketService.removeAllListeners();
-        socketService.disconnect();
+        if (socketService.socket) {
+          socketService.removeAllListeners();
+          socketService.disconnect();
+        }
       } catch (error) {
         console.error('Error during cleanup:', error);
       }
     };
-  }, [handlePlayerJoined, handleGameStarted, handleMoveMade, handlePlayerLeft, handleError]);
-
-  const makeMove = useCallback(async (move) => {
-    if (!user) {
-      setError('You must be logged in to make a move');
-      throw new Error('Not authenticated');
-    }
-
-    try {
-      const response = await fetch(`http://localhost:5000/api/games/${gameId}/move`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
-        },
-        body: JSON.stringify({
-          userId: user._id,
-          move,
-        }),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to make move');
-      }
-
-      const data = await response.json();
-      setGame(currentGame => {
-        try {
-          const gameCopy = new Chess(data.fen);
-          return gameCopy;
-        } catch (error) {
-          console.error('Error applying move:', error);
-          return currentGame;
-        }
-      });
-      setIsMyTurn(!isMyTurn);
-      return data;
-    } catch (error) {
-      setError(error.message);
-      throw error;
-    }
-  }, [gameId, isMyTurn, user]);
-
-  const createGame = useCallback(async () => {
-    if (!user) {
-      setError('You must be logged in to create a game');
-      throw new Error('Not authenticated');
-    }
-
-    try {
-      const response = await fetch('http://localhost:5000/api/games', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
-        },
-        body: JSON.stringify({
-          userId: user._id,
-          timeControl: 'rapid',
-        }),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to create game');
-      }
-
-      const data = await response.json();
-      setGameId(data.gameId);
-      setPlayerColor('white');
-      setIsMyTurn(true);
-      return data.gameId;
-    } catch (error) {
-      setError(error.message);
-      throw error;
-    }
-  }, [user]);
-
-  const joinGame = useCallback(async (gameId) => {
-    if (!user) {
-      setError('You must be logged in to join a game');
-      throw new Error('Not authenticated');
-    }
-
-    try {
-      // First check if game exists
-      const gameResponse = await fetch(`http://localhost:5000/api/games/${gameId}`, {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
-        }
-      });
-
-      if (!gameResponse.ok) {
-        const errorData = await gameResponse.json();
-        throw new Error(errorData.error || 'Game not found');
-      }
-
-      // Then try to join the game
-      const response = await fetch(`http://localhost:5000/api/games/${gameId}/join`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
-        },
-        body: JSON.stringify({
-          userId: user._id,
-        }),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to join game');
-      }
-
-      const data = await response.json();
-      
-      // Connect to socket server
-      await socketService.connect();
-      
-      // Join the game room
-      await socketService.joinGame(gameId, user._id);
-
-      setGameId(gameId);
-      setPlayerColor('black');
-      setIsMyTurn(false);
-      return data;
-    } catch (error) {
-      setError(error.message);
-      throw error;
-    }
-  }, [user]);
-
-  const resetGame = useCallback(() => {
-    setGame(new Chess());
-    setGameStatus('waiting');
-    setOpponentConnected(false);
-    setError(null);
-    setIsMyTurn(false);
   }, []);
 
-  return (
-    <GameContext.Provider
-      value={{
-        game,
-        setGame,
-        gameId,
-        playerColor,
-        opponentConnected,
-        gameStatus,
-        error,
-        opponentName,
-        isMyTurn,
-        createGame,
-        joinGame,
-        makeMove,
-        resetGame,
-        setGameStatus,
-        setError,
-        fen: game.fen(),
-        turn: game.turn()
-      }}
-    >
-      {children}
-    </GameContext.Provider>
-  );
+  const value = {
+    game,
+    gameId,
+    gameStatus,
+    playerColor,
+    isMyTurn,
+    error,
+    opponentConnected,
+    setupGame,
+    handleMoveMade,
+    handlePlayerJoined,
+    handleGameStarted,
+    handlePlayerLeft,
+    handleError,
+    handleGameOver
+  };
+
+  return <GameContext.Provider value={value}>{children}</GameContext.Provider>;
 };
 
 export const useGame = () => {
